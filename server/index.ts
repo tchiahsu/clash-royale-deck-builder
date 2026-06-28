@@ -82,6 +82,16 @@ const WAR_VARIANTS = [
   'Aim for a Bridge Spam or Bait archetype: apply dual-lane pressure or bait out counters.',
 ]
 
+// The displayed win rate is the model's own estimate (not real ladder data),
+// so we keep it inside a believable competitive band and never surface a 0%
+// (failed-generation) deck.
+const MIN_WIN_RATE = 52
+const MAX_WIN_RATE = 72
+const clampWinRate = (n: number) => Math.min(MAX_WIN_RATE, Math.max(MIN_WIN_RATE, Math.round(n)))
+// Fallback estimate when the model didn't return a usable number: derive it
+// from how close the deck's average elixir is to a healthy ~3.6 curve.
+const heuristicWinRate = (avgElixir: number) => clampWinRate(60 - Math.abs(avgElixir - 3.6) * 4)
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, model: MODEL, hasKey: Boolean(API_KEY) })
 })
@@ -201,6 +211,19 @@ Return a single deck object.`
     }
     const texts = settled.map((r) => (r.status === 'fulfilled' ? r.value : undefined))
 
+    // Second pass: any slot that failed (or returned nothing) gets one more
+    // attempt, run sequentially so we don't burst into a rate limit. This is
+    // what keeps a deck from falling back to a 0% pool-built deck in the
+    // common case where a single parallel call hit a transient error.
+    for (let i = 0; i < texts.length; i++) {
+      if (texts[i]) continue
+      try {
+        texts[i] = await generateDeck(buildPrompt(variants[i], includesFor(i)))
+      } catch {
+        // Still failed — it'll get a heuristic estimate + pool backfill below.
+      }
+    }
+
     const parsed = texts.map((text) => {
       let obj: Record<string, unknown> = {}
       try {
@@ -238,8 +261,21 @@ Return a single deck object.`
       }
       for (const k of deck.cards) take(k)
       for (const c of pool) take(c.key)
-      return { ...deck, cards, averageElixir: avgOf(cards) }
+      const averageElixir = avgOf(cards)
+      // Use the model's estimate when it gave a real one; otherwise fall back
+      // to a curve-based heuristic. Either way it's clamped into a competitive
+      // band, so a deck never displays as 0% or an implausible figure.
+      const modelRate = deck.estimatedWinRate
+      const estimatedWinRate =
+        Number.isFinite(modelRate) && modelRate > 0
+          ? clampWinRate(modelRate)
+          : heuristicWinRate(averageElixir)
+      return { ...deck, cards, averageElixir, estimatedWinRate }
     })
+
+    // Strongest decks first — for War this surfaces the highest win rates at
+    // the top of the four.
+    decks.sort((a, b) => b.estimatedWinRate - a.estimatedWinRate)
 
     res.json({ decks })
   } catch (err) {
