@@ -310,6 +310,10 @@ a {
   box-shadow: 0 4px 12px rgba(47, 127, 240, 0.35);
   transition: background 0.12s ease, transform 0.06s ease;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 .generate-btn:hover:not(:disabled) {
   background: var(--blue-dark);
@@ -705,6 +709,75 @@ a {
 }
 .app-footer a {
   color: #cfe0f7;
+}
+
+/* ===== Loading: spinner + skeletons ===== */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2.5px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.spinner.blue {
+  width: 18px;
+  height: 18px;
+  border-color: rgba(47, 127, 240, 0.25);
+  border-top-color: var(--blue);
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.skeleton {
+  background: linear-gradient(100deg, #e9eef5 30%, #f6f9fc 50%, #e9eef5 70%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s ease-in-out infinite;
+  border-radius: 8px;
+}
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+.card-skel {
+  width: 100%;
+  aspect-ratio: 302 / 363;
+  border-radius: 10px;
+}
+.deck-skel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+}
+.skel-title {
+  height: 18px;
+  width: 45%;
+  margin-bottom: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .skeleton {
+    animation: none;
+  }
 }
 
 /* Responsive */

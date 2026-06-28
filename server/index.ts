@@ -112,13 +112,16 @@ app.post('/api/recommend', async (req, res) => {
   const exclude = Array.isArray(body.exclude) ? body.exclude : []
   const arena = Number.isFinite(body.arena) ? Number(body.arena) : 0
 
-  // Ladder decks may share cards, so 8 is enough. War decks share none, so 4×8 = 32.
+  // Battle decks may share cards, so 8 is enough. War's 4 decks share no cards,
+  // so we need 32 unlocked cards that haven't been excluded.
+  const excludeSet = new Set(exclude)
+  const usableCount = pool.reduce((n, c) => n + (excludeSet.has(c.key) ? 0 : 1), 0)
   const minPool = mode === 'war' ? 32 : 8
-  if (pool.length < minPool) {
+  if (usableCount < minPool) {
     return res.status(400).json({
       error:
         mode === 'war'
-          ? `War mode builds 4 non-overlapping decks and needs at least ${minPool} unlocked cards (you have ${pool.length}). Raise your arena.`
+          ? `War mode builds 4 decks with no shared cards, so it needs at least 32 unlocked, non-excluded cards (you have ${usableCount}). Raise your arena or exclude fewer cards.`
           : `The available card pool must contain at least ${minPool} cards.`,
     })
   }
@@ -223,6 +226,53 @@ ${includeRule}
         defense: String(deck.defense ?? ''),
       }
     })
+
+    // War: guarantee exactly 4 decks whose 32 cards are all unique. The model is
+    // told this, but we enforce it — dedupe across decks and backfill any gaps
+    // from unused, non-excluded pool cards.
+    if (mode === 'war') {
+      const used = new Set<string>()
+      const backfill = pool.map((c) => c.key).filter((k) => !excludeSet.has(k))
+      const avgOf = (ks: string[]) =>
+        Math.round((ks.reduce((s, k) => s + (byKey.get(k)?.elixir ?? 0), 0) / (ks.length || 1)) * 10) /
+        10
+
+      while (decks.length < 4) {
+        decks.push({
+          name: `War Deck ${decks.length + 1}`,
+          archetype: '',
+          cards: [],
+          estimatedWinRate: 0,
+          averageElixir: 0,
+          description: '',
+          winConditions: [],
+          tank: '',
+          offense: '',
+          defense: '',
+        })
+      }
+      decks.length = 4
+
+      for (const deck of decks) {
+        const unique: string[] = []
+        for (const k of deck.cards) {
+          if (unique.length >= 8) break
+          if (!used.has(k)) {
+            used.add(k)
+            unique.push(k)
+          }
+        }
+        for (const k of backfill) {
+          if (unique.length >= 8) break
+          if (!used.has(k)) {
+            used.add(k)
+            unique.push(k)
+          }
+        }
+        deck.cards = unique
+        deck.averageElixir = avgOf(unique)
+      }
+    }
 
     res.json({ decks })
   } catch (err) {

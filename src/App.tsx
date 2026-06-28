@@ -14,6 +14,26 @@ const SORT_OPTIONS: { value: SortBy; label: string }[] = [
 const TYPE_ORDER: Record<string, number> = { Troop: 0, Building: 1, Spell: 2 }
 const RARITY_RANK: Record<string, number> = { Common: 0, Rare: 1, Epic: 2, Legendary: 3, Champion: 4 }
 
+function DeckSkeleton({ count }: { count: number }) {
+  return (
+    <div className="results" aria-busy="true">
+      <div className="loading-head">
+        <span className="spinner blue" aria-hidden="true" /> Building your decks…
+      </div>
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="deck-skel">
+          <div className="skeleton skel-title" />
+          <div className="deck-cards">
+            {Array.from({ length: 8 }).map((_, j) => (
+              <div key={j} className="skeleton card-skel" />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function App() {
   const [cards, setCards] = useState<Card[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -27,9 +47,24 @@ export default function App() {
   const [showLocked, setShowLocked] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const [decks, setDecks] = useState<Deck[] | null>(null)
-  const [generating, setGenerating] = useState(false)
-  const [genError, setGenError] = useState<string | null>(null)
+  const [resultsByMode, setResultsByMode] = useState<Record<Mode, Deck[] | null>>({
+    battle: null,
+    war: null,
+  })
+  const [generatingByMode, setGeneratingByMode] = useState<Record<Mode, boolean>>({
+    battle: false,
+    war: false,
+  })
+  const [errorByMode, setErrorByMode] = useState<Record<Mode, string | null>>({
+    battle: null,
+    war: null,
+  })
+
+  // Battle and War are independent — each tab shows only its own results,
+  // loading state, and errors.
+  const decks = resultsByMode[mode]
+  const generating = generatingByMode[mode]
+  const genError = errorByMode[mode]
 
   const maxInclude = mode === 'war' ? 32 : 8
 
@@ -105,22 +140,26 @@ export default function App() {
   }
 
   const generate = async () => {
-    setGenerating(true)
-    setGenError(null)
-    setDecks(null)
+    const target = mode // lock to the tab that was clicked
+    setGeneratingByMode((p) => ({ ...p, [target]: true }))
+    setErrorByMode((p) => ({ ...p, [target]: null }))
+    setResultsByMode((p) => ({ ...p, [target]: null }))
     try {
       const res = await recommendDecks({
         arena,
-        mode,
+        mode: target,
         include: includeKeys,
         exclude: excludeKeys,
         pool: unlockedPool,
       })
-      setDecks(res.decks)
+      setResultsByMode((p) => ({ ...p, [target]: res.decks }))
     } catch (e: unknown) {
-      setGenError(e instanceof Error ? e.message : 'Failed to generate decks')
+      setErrorByMode((p) => ({
+        ...p,
+        [target]: e instanceof Error ? e.message : 'Failed to generate decks',
+      }))
     } finally {
-      setGenerating(false)
+      setGeneratingByMode((p) => ({ ...p, [target]: false }))
     }
   }
 
@@ -203,7 +242,11 @@ export default function App() {
           </p>
 
           {cards.length === 0 ? (
-            <p className="loading">Loading cards…</p>
+            <div className="card-grid" aria-busy="true">
+              {Array.from({ length: 24 }).map((_, i) => (
+                <div key={i} className="skeleton card-skel" />
+              ))}
+            </div>
           ) : (
             <div className="card-grid">
               {visibleCards.map((c) => (
@@ -224,7 +267,7 @@ export default function App() {
           <section className="panel suggest-panel">
             <div className="suggest-head">
               <div className="suggest-title">
-                <h2>{mode === 'war' ? 'Suggested war decks' : 'Suggested battle decks'}</h2>
+                <h2>{mode === 'war' ? 'Your 4 war decks' : 'Suggested battle decks'}</h2>
               </div>
               <div className="suggest-actions">
                 <label className="field">
@@ -243,7 +286,13 @@ export default function App() {
                   onClick={generate}
                   disabled={generating || cards.length === 0}
                 >
-                  {generating ? 'Building…' : 'Generate'}
+                  {generating ? (
+                    <>
+                      <span className="spinner" aria-hidden="true" /> Building…
+                    </>
+                  ) : (
+                    'Generate'
+                  )}
                 </button>
               </div>
             </div>
@@ -257,15 +306,15 @@ export default function App() {
             {notice && <p className="notice">{notice}</p>}
             {genError && <p className="gen-error">{genError}</p>}
 
-            {decks && decks.length > 0 ? (
+            {generating ? (
+              <DeckSkeleton count={mode === 'war' ? 4 : 3} />
+            ) : decks && decks.length > 0 ? (
               <DeckResults decks={decks} cardsByKey={cardsByKey} />
             ) : (
-              !generating && (
-                <p className="suggest-placeholder">
-                  Pick the cards you want and don't want, choose your arena, then hit{' '}
-                  <strong>Generate</strong> to see your recommended decks.
-                </p>
-              )
+              <p className="suggest-placeholder">
+                Pick the cards you want and don't want, choose your arena, then hit{' '}
+                <strong>Generate</strong> to see your recommended decks.
+              </p>
             )}
           </section>
 
