@@ -29,9 +29,26 @@ export async function recommendDecks(params: RecommendParams): Promise<Recommend
     }),
   })
 
+  // Read the body as text first so an empty or non-JSON response (e.g. a
+  // gateway timeout that returns headers but no body) gives a clear message
+  // instead of "Unexpected end of JSON input".
+  const raw = await res.text()
+  let data: (RecommendResponse & { error?: string }) | null = null
+  if (raw) {
+    try {
+      data = JSON.parse(raw) as RecommendResponse & { error?: string }
+    } catch {
+      data = null
+    }
+  }
+
   if (!res.ok) {
-    const data = (await res.json().catch(() => null)) as { error?: string } | null
     throw new Error(data?.error ?? `Request failed (HTTP ${res.status})`)
   }
-  return (await res.json()) as RecommendResponse
+  if (!data || !Array.isArray(data.decks)) {
+    throw new Error(
+      'The server returned an empty or invalid response. The request may have timed out — please try again.',
+    )
+  }
+  return data
 }
