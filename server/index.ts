@@ -178,7 +178,7 @@ ${includeRule}
 - For each deck explain how it works for a player at this arena: "description" (overview), "winConditions" (the cards used to take towers), "tank" (the tank/mini-tank that soaks damage, or "None"), "offense" (how to attack and support the push), and "defense" (key defensive cards and how to handle common threats).`
 
   try {
-    const response = await ai.models.generateContent({
+    const requestParams = {
       model: MODEL,
       contents: prompt,
       config: {
@@ -186,8 +186,26 @@ ${includeRule}
         responseSchema: deckSchema,
         temperature: 0.9,
       },
-    })
+    }
 
+    // Gemini's free tier occasionally returns transient 429/503 ("high demand").
+    // Retry a few times with backoff before surfacing the error.
+    const callModel = async () => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await ai.models.generateContent(requestParams)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          const transient = /(?:\b429\b|\b503\b|UNAVAILABLE|overloaded|high demand|RESOURCE_EXHAUSTED)/i.test(
+            msg,
+          )
+          if (!transient || attempt >= 3) throw err
+          await new Promise((r) => setTimeout(r, 800 * (attempt + 1)))
+        }
+      }
+    }
+
+    const response = await callModel()
     const text = response.text
     if (!text) {
       return res.status(502).json({ error: 'The model returned an empty response. Try again.' })

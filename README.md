@@ -62,6 +62,24 @@ npm run build   # typecheck + bundle the frontend into dist/
 npm start       # serves dist/ AND the API from one Express server on PORT (8787)
 ```
 
+## Deploy
+
+This is a **full-stack Node app**, not a static site: one Express server serves
+the built frontend **and** the `/api` backend that calls Gemini. Deploy it to a
+host that runs Node (Render, Railway, Fly.io, a VPS, etc.) — **not** a static-only
+host. On a static deploy the page loads but every deck request returns **404**,
+because there is no `/api/recommend` backend running.
+
+On the host:
+
+1. Set the environment variable **`GEMINI_API_KEY`** (and optionally `GEMINI_MODEL`,
+   `PORT`). Do **not** commit `.env` — it is gitignored.
+2. Build command: `npm install && npm run build`
+3. Start command: `npm start`
+
+The server listens on `PORT` (default `8787`) and serves the SPA + API from that
+single port, so the frontend's relative `/api` calls resolve in production.
+
 ## How it works
 
 1. The browser loads the full card list from the static dataset and renders the
