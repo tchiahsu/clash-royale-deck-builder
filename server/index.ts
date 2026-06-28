@@ -17,7 +17,6 @@ const app = express()
 app.use(cors())
 app.use(express.json({ limit: '2mb' }))
 
-/** A card as sent by the frontend pool. */
 interface PoolCard {
   key: string
   name: string
@@ -28,68 +27,59 @@ interface PoolCard {
 
 interface RecommendBody {
   arena?: number
-  mode?: 'ladder' | 'war'
+  mode?: 'battle' | 'war'
   include?: string[]
   exclude?: string[]
   pool?: PoolCard[]
 }
 
-const deckSchema = {
+// Schema for a SINGLE deck — we generate decks in parallel (one call each) so a
+// request finishes in roughly one deck's latency instead of summing them.
+const oneDeckSchema = {
   type: Type.OBJECT,
   properties: {
-    decks: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          name: { type: Type.STRING, description: 'Short catchy deck name' },
-          archetype: {
-            type: Type.STRING,
-            description: 'e.g. Beatdown, Control, Cycle, Bait, Siege, Bridge Spam',
-          },
-          cards: {
-            type: Type.ARRAY,
-            description: 'Exactly 8 unique card keys from the provided pool',
-            items: { type: Type.STRING },
-          },
-          estimatedWinRate: {
-            type: Type.NUMBER,
-            description: 'Your expert estimate as a percentage (e.g. 57). Not real ladder data.',
-          },
-          averageElixir: { type: Type.NUMBER },
-          description: { type: Type.STRING, description: 'Overview of what the deck is and why it works.' },
-          winConditions: {
-            type: Type.ARRAY,
-            description: 'The card(s) you rely on to take towers.',
-            items: { type: Type.STRING },
-          },
-          tank: {
-            type: Type.STRING,
-            description: "The deck's tank / mini-tank that soaks damage up front, or 'None' if it has no dedicated tank.",
-          },
-          offense: {
-            type: Type.STRING,
-            description: 'How you attack: what to push with, support cards, when to commit.',
-          },
-          defense: {
-            type: Type.STRING,
-            description: 'How you defend: key defensive cards and how to counter common threats.',
-          },
-        },
-        required: [
-          'name',
-          'archetype',
-          'cards',
-          'estimatedWinRate',
-          'description',
-          'offense',
-          'defense',
-        ],
-      },
+    name: { type: Type.STRING, description: 'Short, catchy deck name' },
+    archetype: {
+      type: Type.STRING,
+      description: 'e.g. Beatdown, Control, Cycle, Bait, Siege, Bridge Spam',
     },
+    cards: {
+      type: Type.ARRAY,
+      description: 'Exactly 8 unique card keys from the provided pool',
+      items: { type: Type.STRING },
+    },
+    estimatedWinRate: {
+      type: Type.NUMBER,
+      description: 'Your expert estimate as a percentage (e.g. 57). Not real ladder data.',
+    },
+    description: { type: Type.STRING, description: 'Overview of what the deck is and why it works.' },
+    winConditions: {
+      type: Type.ARRAY,
+      description: 'The card(s) you rely on to take towers.',
+      items: { type: Type.STRING },
+    },
+    tank: {
+      type: Type.STRING,
+      description: "The deck's tank / mini-tank, or 'None' if it has no dedicated tank.",
+    },
+    offense: { type: Type.STRING, description: 'How you attack: what to push with and when.' },
+    defense: { type: Type.STRING, description: 'How you defend: key cards and how to counter threats.' },
   },
-  required: ['decks'],
+  required: ['name', 'archetype', 'cards', 'estimatedWinRate', 'description', 'offense', 'defense'],
 }
+
+const BATTLE_VARIANTS = [
+  'Build the strongest, most reliable all-around ladder deck from the pool.',
+  'Build a deck with a clearly different archetype and win condition from a standard first pick (lean toward control or beatdown).',
+  'Build a fast, low-average-elixir cycle or bait deck if the pool supports it; otherwise another distinct archetype.',
+]
+
+const WAR_VARIANTS = [
+  'Aim for a Beatdown archetype: a heavy tank with support behind it.',
+  'Aim for a Control or Siege archetype: defend and chip with a building or ranged win condition.',
+  'Aim for a Fast Cycle archetype: a cheap, fast win condition with a low average elixir.',
+  'Aim for a Bridge Spam or Bait archetype: apply dual-lane pressure or bait out counters.',
+]
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, model: MODEL, hasKey: Boolean(API_KEY) })
@@ -105,15 +95,15 @@ app.post('/api/recommend', async (req, res) => {
 
   const body = req.body as RecommendBody
   const pool = Array.isArray(body.pool) ? body.pool : []
-  const mode = body.mode === 'war' ? 'war' : 'ladder'
+  const mode = body.mode === 'war' ? 'war' : 'battle'
   const deckCount = mode === 'war' ? 4 : 3
-  const maxInclude = deckCount * 8
-  const include = (Array.isArray(body.include) ? body.include : []).slice(0, maxInclude)
+  const include = (Array.isArray(body.include) ? body.include : []).slice(0, deckCount * 8)
   const exclude = Array.isArray(body.exclude) ? body.exclude : []
   const arena = Number.isFinite(body.arena) ? Number(body.arena) : 0
+  const arenaLabel = arena === 0 ? 'Training Camp' : `Arena ${arena}`
 
-  // Battle decks may share cards, so 8 is enough. War's 4 decks share no cards,
-  // so we need 32 unlocked cards that haven't been excluded.
+  // Battle decks may share cards (8 is enough). War's 4 decks share none, so we
+  // need 32 unlocked cards that haven't been excluded.
   const excludeSet = new Set(exclude)
   const usableCount = pool.reduce((n, c) => n + (excludeSet.has(c.key) ? 0 : 1), 0)
   const minPool = mode === 'war' ? 32 : 8
@@ -131,172 +121,137 @@ app.post('/api/recommend', async (req, res) => {
   const normalizeKey = (raw: unknown): string | null => {
     const k = String(raw ?? '').trim()
     if (byKey.has(k)) return k
-    const viaName = byName.get(k.toLowerCase())
-    return viaName ?? null
+    return byName.get(k.toLowerCase()) ?? null
   }
-
   const nameOf = (k: string) => byKey.get(k)?.name ?? k
-  const includeList = include.length ? include.map(nameOf).join(', ') : 'none'
-  const excludeList = exclude.length ? exclude.map(nameOf).join(', ') : 'none'
+  const avgOf = (ks: string[]) =>
+    Math.round((ks.reduce((s, k) => s + (byKey.get(k)?.elixir ?? 0), 0) / (ks.length || 1)) * 10) / 10
 
+  const excludeList = exclude.length ? exclude.map(nameOf).join(', ') : 'none'
   const poolText = pool
     .map((c) => `- ${c.key}: ${c.name} (${c.elixir} elixir, ${c.type}, ${c.rarity})`)
     .join('\n')
 
-  const numberWord = deckCount === 4 ? 'FOUR' : 'THREE'
+  const variants = mode === 'war' ? WAR_VARIANTS : BATTLE_VARIANTS
+  // War: a must-include card can live in only one deck, so spread includes
+  // across the four decks. Battle: every deck includes them.
+  const includesFor = (i: number) =>
+    mode === 'war' ? include.filter((_, idx) => idx % deckCount === i) : include
 
-  const includeRule =
+  const warNote =
     mode === 'war'
-      ? `- Every must-include card must appear in at least one deck (a card belongs to only one deck in war).`
-      : `- Every deck MUST contain all of the must-include cards.`
+      ? ' This is one of 4 war decks that must NOT share any cards, so favor distinct win conditions and support cards.'
+      : ''
 
-  const modeRules =
-    mode === 'war'
-      ? `This is for CLAN WAR. Build 4 decks for War Day where a card may be used in ONLY ONE deck.
-- Across all 4 decks combined, EVERY card must be unique — no card may appear in more than one deck (32 distinct cards total).
-- Each of the 4 decks should still be independently viable with its own win condition.`
-      : `This is for LADder play. Make the ${deckCount} decks meaningfully different from one another (prefer different archetypes).`
+  const buildPrompt = (variant: string, mustInclude: string[]) =>
+    `You are a Clash Royale deck-building expert. Build ONE competitive 8-card deck for a player at ${arenaLabel}.
 
-  const prompt = `You are a Clash Royale deck-building expert. Build ${numberWord} distinct, competitive 8-card decks for a player.
+${variant}${warNote}
 
-${modeRules}
+Cards this deck MUST include: ${mustInclude.length ? mustInclude.map(nameOf).join(', ') : 'none'}
+Cards to NEVER use: ${excludeList}
 
-Player arena: ${arena === 0 ? 'Training Camp' : `Arena ${arena}`}
-Cards the player wants used: ${includeList}
-Cards the player does NOT want (never use these): ${excludeList}
-
-You may ONLY use cards from this available pool (the player has unlocked these). Reference cards by their exact "key":
+Use ONLY cards from this pool, referenced by their exact "key":
 ${poolText}
 
 Rules:
-- Build EXACTLY ${deckCount} decks. Each deck has EXACTLY 8 unique cards, each referenced by its exact key from the pool above.
-${includeRule}
-- No deck may contain any of the do-not-want cards.
-- Each deck needs at least one real win condition and a sensible elixir curve.
-- "estimatedWinRate" is YOUR expert estimate (balanced decks are usually 50-62); it is NOT real ladder data.
-- "averageElixir" is the mean elixir cost of the 8 cards.
-- For each deck explain how it works for a player at this arena: "description" (overview), "winConditions" (the cards used to take towers), "tank" (the tank/mini-tank that soaks damage, or "None"), "offense" (how to attack and support the push), and "defense" (key defensive cards and how to handle common threats).`
+- EXACTLY 8 unique cards, each an exact key from the pool above.
+- Include every must-include card; never use a do-not-want card.
+- Sensible elixir curve and at least one real win condition.
+- "estimatedWinRate" is your expert estimate (balanced decks ~50-62); it is NOT real ladder data.
+- Explain the deck for this arena: "description" (overview), "winConditions" (cards used to take towers), "tank" (tank/mini-tank or "None"), "offense" (how to attack), "defense" (how to defend).
+Return a single deck object.`
+
+  // Call the model for one deck, retrying transient 429/503 ("high demand").
+  const generateDeck = async (prompt: string): Promise<string | undefined> => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const r = await ai.models.generateContent({
+          model: MODEL,
+          contents: prompt,
+          config: { responseMimeType: 'application/json', responseSchema: oneDeckSchema, temperature: 0.9 },
+        })
+        return r.text
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        const transient = /(?:\b429\b|\b503\b|UNAVAILABLE|overloaded|high demand|RESOURCE_EXHAUSTED)/i.test(
+          msg,
+        )
+        if (!transient || attempt >= 3) throw err
+        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)))
+      }
+    }
+  }
 
   try {
-    const requestParams = {
-      model: MODEL,
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: deckSchema,
-        temperature: 0.9,
-      },
+    // Generate all decks in parallel. allSettled so one failed call (e.g. a
+    // transient rate-limit) doesn't sink the whole request — that deck falls
+    // back to a pool-built deck below. If every call fails, surface the error.
+    const settled = await Promise.allSettled(
+      variants.map((v, i) => generateDeck(buildPrompt(v, includesFor(i)))),
+    )
+    if (!settled.some((r) => r.status === 'fulfilled' && r.value)) {
+      const firstError = settled.find((r) => r.status === 'rejected') as
+        | PromiseRejectedResult
+        | undefined
+      throw firstError?.reason instanceof Error
+        ? firstError.reason
+        : new Error('Deck generation failed.')
     }
+    const texts = settled.map((r) => (r.status === 'fulfilled' ? r.value : undefined))
 
-    // Gemini's free tier occasionally returns transient 429/503 ("high demand").
-    // Retry a few times with backoff before surfacing the error.
-    const callModel = async () => {
-      for (let attempt = 0; ; attempt++) {
-        try {
-          return await ai.models.generateContent(requestParams)
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          const transient = /(?:\b429\b|\b503\b|UNAVAILABLE|overloaded|high demand|RESOURCE_EXHAUSTED)/i.test(
-            msg,
-          )
-          if (!transient || attempt >= 3) throw err
-          await new Promise((r) => setTimeout(r, 800 * (attempt + 1)))
-        }
+    const parsed = texts.map((text) => {
+      let obj: Record<string, unknown> = {}
+      try {
+        obj = text ? (JSON.parse(text) as Record<string, unknown>) : {}
+      } catch {
+        obj = {}
       }
-    }
-
-    const response = await callModel()
-    const text = response.text
-    if (!text) {
-      return res.status(502).json({ error: 'The model returned an empty response. Try again.' })
-    }
-
-    const parsed = JSON.parse(text) as { decks?: unknown[] }
-    const rawDecks = Array.isArray(parsed.decks) ? parsed.decks : []
-
-    const decks = rawDecks.map((d) => {
-      const deck = d as Record<string, unknown>
-      const rawCards = Array.isArray(deck.cards) ? deck.cards : []
-      // Normalize to valid pool keys, drop unknowns and duplicates.
-      const seen = new Set<string>()
-      const cards: string[] = []
-      for (const c of rawCards) {
-        const k = normalizeKey(c)
-        if (k && !seen.has(k)) {
-          seen.add(k)
-          cards.push(k)
-        }
-      }
-      // Recompute average elixir from the real cards (more reliable than the model).
-      const avg = cards.length
-        ? cards.reduce((sum, k) => sum + (byKey.get(k)?.elixir ?? 0), 0) / cards.length
-        : 0
+      const rawCards = Array.isArray(obj.cards) ? obj.cards : []
+      const cards = rawCards.map(normalizeKey).filter((k): k is string => Boolean(k))
       return {
-        name: String(deck.name ?? 'Untitled Deck'),
-        archetype: String(deck.archetype ?? ''),
+        name: String(obj.name ?? 'Deck'),
+        archetype: String(obj.archetype ?? ''),
         cards,
-        estimatedWinRate: Number(deck.estimatedWinRate ?? 0),
-        averageElixir: Math.round(avg * 10) / 10,
-        description: String(deck.description ?? ''),
-        winConditions: Array.isArray(deck.winConditions) ? deck.winConditions.map(String) : [],
-        tank: deck.tank ? String(deck.tank) : '',
-        offense: String(deck.offense ?? ''),
-        defense: String(deck.defense ?? ''),
+        estimatedWinRate: Number(obj.estimatedWinRate ?? 0),
+        description: String(obj.description ?? ''),
+        winConditions: Array.isArray(obj.winConditions) ? obj.winConditions.map(String) : [],
+        tank: obj.tank ? String(obj.tank) : '',
+        offense: String(obj.offense ?? ''),
+        defense: String(obj.defense ?? ''),
       }
     })
 
-    // War: guarantee exactly 4 decks whose 32 cards are all unique. The model is
-    // told this, but we enforce it — dedupe across decks and backfill any gaps
-    // from unused, non-excluded pool cards.
-    if (mode === 'war') {
-      const used = new Set<string>()
-      const backfill = pool.map((c) => c.key).filter((k) => !excludeSet.has(k))
-      const avgOf = (ks: string[]) =>
-        Math.round((ks.reduce((s, k) => s + (byKey.get(k)?.elixir ?? 0), 0) / (ks.length || 1)) * 10) /
-        10
-
-      while (decks.length < 4) {
-        decks.push({
-          name: `War Deck ${decks.length + 1}`,
-          archetype: '',
-          cards: [],
-          estimatedWinRate: 0,
-          averageElixir: 0,
-          description: '',
-          winConditions: [],
-          tank: '',
-          offense: '',
-          defense: '',
-        })
+    // Finalize each deck to exactly 8 valid cards. War enforces global
+    // uniqueness (no card in two decks); both modes backfill any gaps from
+    // unused, non-excluded pool cards.
+    const isWar = mode === 'war'
+    const usedGlobally = new Set<string>()
+    const decks = parsed.map((deck) => {
+      const cards: string[] = []
+      const take = (k: string) => {
+        if (cards.length >= 8 || cards.includes(k) || excludeSet.has(k)) return
+        if (isWar && usedGlobally.has(k)) return
+        cards.push(k)
+        if (isWar) usedGlobally.add(k)
       }
-      decks.length = 4
-
-      for (const deck of decks) {
-        const unique: string[] = []
-        for (const k of deck.cards) {
-          if (unique.length >= 8) break
-          if (!used.has(k)) {
-            used.add(k)
-            unique.push(k)
-          }
-        }
-        for (const k of backfill) {
-          if (unique.length >= 8) break
-          if (!used.has(k)) {
-            used.add(k)
-            unique.push(k)
-          }
-        }
-        deck.cards = unique
-        deck.averageElixir = avgOf(unique)
-      }
-    }
+      for (const k of deck.cards) take(k)
+      for (const c of pool) take(c.key)
+      return { ...deck, cards, averageElixir: avgOf(cards) }
+    })
 
     res.json({ decks })
   } catch (err) {
-    console.error('[recommend] error:', err)
-    const message = err instanceof Error ? err.message : 'Unknown error generating decks.'
-    res.status(500).json({ error: message })
+    const raw = err instanceof Error ? err.message : String(err)
+    console.error('[recommend] error:', raw)
+    const rateLimited = /\b429\b|RESOURCE_EXHAUSTED|quota/i.test(raw)
+    if (rateLimited) {
+      return res.status(429).json({
+        error:
+          'Gemini free-tier rate limit reached (5 requests/minute). Wait about a minute and try again, or switch GEMINI_API_KEY to a paid key for higher limits.',
+      })
+    }
+    res.status(500).json({ error: 'Could not generate decks. Please try again.' })
   }
 })
 
