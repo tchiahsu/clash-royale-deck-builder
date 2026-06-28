@@ -5,6 +5,7 @@ import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { GoogleGenAI, Type } from '@google/genai'
+import { finalizeDecks, type PoolCard } from './finalize.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -17,14 +18,6 @@ const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '2mb' }))
-
-interface PoolCard {
-  key: string
-  name: string
-  elixir: number
-  type: string
-  rarity: string
-}
 
 interface RecommendBody {
   arena?: number
@@ -82,16 +75,6 @@ const WAR_VARIANTS = [
   'Aim for a Bridge Spam or Bait archetype: apply dual-lane pressure or bait out counters.',
 ]
 
-// The displayed win rate is the model's own estimate (not real ladder data),
-// so we keep it inside a believable competitive band and never surface a 0%
-// (failed-generation) deck.
-const MIN_WIN_RATE = 52
-const MAX_WIN_RATE = 72
-const clampWinRate = (n: number) => Math.min(MAX_WIN_RATE, Math.max(MIN_WIN_RATE, Math.round(n)))
-// Fallback estimate when the model didn't return a usable number: derive it
-// from how close the deck's average elixir is to a healthy ~3.6 curve.
-const heuristicWinRate = (avgElixir: number) => clampWinRate(60 - Math.abs(avgElixir - 3.6) * 4)
-
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, model: MODEL, hasKey: Boolean(API_KEY) })
 })
@@ -135,8 +118,6 @@ app.post('/api/recommend', async (req, res) => {
     return byName.get(k.toLowerCase()) ?? null
   }
   const nameOf = (k: string) => byKey.get(k)?.name ?? k
-  const avgOf = (ks: string[]) =>
-    Math.round((ks.reduce((s, k) => s + (byKey.get(k)?.elixir ?? 0), 0) / (ks.length || 1)) * 10) / 10
 
   const excludeList = exclude.length ? exclude.map(nameOf).join(', ') : 'none'
   const poolText = pool
@@ -246,36 +227,10 @@ Return a single deck object.`
       }
     })
 
-    // Finalize each deck to exactly 8 valid cards. War enforces global
-    // uniqueness (no card in two decks); both modes backfill any gaps from
-    // unused, non-excluded pool cards.
-    const isWar = mode === 'war'
-    const usedGlobally = new Set<string>()
-    const decks = parsed.map((deck) => {
-      const cards: string[] = []
-      const take = (k: string) => {
-        if (cards.length >= 8 || cards.includes(k) || excludeSet.has(k)) return
-        if (isWar && usedGlobally.has(k)) return
-        cards.push(k)
-        if (isWar) usedGlobally.add(k)
-      }
-      for (const k of deck.cards) take(k)
-      for (const c of pool) take(c.key)
-      const averageElixir = avgOf(cards)
-      // Use the model's estimate when it gave a real one; otherwise fall back
-      // to a curve-based heuristic. Either way it's clamped into a competitive
-      // band, so a deck never displays as 0% or an implausible figure.
-      const modelRate = deck.estimatedWinRate
-      const estimatedWinRate =
-        Number.isFinite(modelRate) && modelRate > 0
-          ? clampWinRate(modelRate)
-          : heuristicWinRate(averageElixir)
-      return { ...deck, cards, averageElixir, estimatedWinRate }
-    })
-
-    // Strongest decks first — for War this surfaces the highest win rates at
-    // the top of the four.
-    decks.sort((a, b) => b.estimatedWinRate - a.estimatedWinRate)
+    // Turn the model's parsed decks into final 8-card decks: honor must-include
+    // cards, enforce War's no-shared-cards rule, de-duplicate, and assign a
+    // sensible (non-zero) win rate. See server/finalize.ts.
+    const decks = finalizeDecks(parsed, { pool, mode, include, exclude })
 
     res.json({ decks })
   } catch (err) {
