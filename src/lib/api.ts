@@ -29,10 +29,21 @@ export async function recommendDecks(params: RecommendParams): Promise<Recommend
     }),
   })
 
-  // Read the body as text first so an empty or non-JSON response (e.g. a
-  // gateway timeout that returns headers but no body) gives a clear message
+  // Read the body as text first so a non-JSON response gives a clear message
   // instead of "Unexpected end of JSON input".
   const raw = await res.text()
+  const contentType = res.headers.get('content-type') ?? ''
+  const looksLikeHtml = contentType.includes('text/html') || /^\s*</.test(raw)
+
+  // The most common deploy failure: the request returns the SPA's index.html
+  // instead of deck JSON, meaning the /api backend isn't running on this host.
+  if (looksLikeHtml) {
+    throw new Error(
+      'The /api backend is not running on this deployment — the request returned the web page (HTML), not deck data. ' +
+        'This app must be deployed as a Node web service that runs `npm start`, not as a static site.',
+    )
+  }
+
   let data: (RecommendResponse & { error?: string }) | null = null
   if (raw) {
     try {
@@ -46,9 +57,7 @@ export async function recommendDecks(params: RecommendParams): Promise<Recommend
     throw new Error(data?.error ?? `Request failed (HTTP ${res.status})`)
   }
   if (!data || !Array.isArray(data.decks)) {
-    throw new Error(
-      'The server returned an empty or invalid response. The request may have timed out — please try again.',
-    )
+    throw new Error('The server returned an empty or invalid response. Please try again.')
   }
   return data
 }

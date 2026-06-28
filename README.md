@@ -72,13 +72,29 @@ because there is no `/api/recommend` backend running.
 
 On the host:
 
-1. Set the environment variable **`GEMINI_API_KEY`** (and optionally `GEMINI_MODEL`,
-   `PORT`). Do **not** commit `.env` — it is gitignored.
+1. Set the environment variable **`GEMINI_API_KEY`** (and optionally `GEMINI_MODEL`).
+   Do **not** commit `.env` — it is gitignored. Do **not** set `PORT` (the host
+   injects it; the server reads `process.env.PORT`).
 2. Build command: `npm install && npm run build`
 3. Start command: `npm start`
 
-The server listens on `PORT` (default `8787`) and serves the SPA + API from that
-single port, so the frontend's relative `/api` calls resolve in production.
+The server listens on `PORT` and serves the SPA + API from that single port, so
+the frontend's relative `/api` calls resolve in production.
+
+### Render
+
+Deploy as a **Web Service**, not a **Static Site** — a Static Site has no server,
+so `/api/recommend` (the Gemini call) won't exist and deck generation returns
+empty results.
+
+- Easiest: this repo includes `render.yaml`. In Render, **New → Blueprint**, point
+  it at the repo, then set `GEMINI_API_KEY` in the dashboard.
+- Or manually: **New → Web Service** →
+  - Build Command: `npm install && npm run build`
+  - Start Command: `npm start`
+  - Environment: add `GEMINI_API_KEY`
+- Verify after deploy: open `https://<your-app>.onrender.com/api/health` — it should
+  return `{"ok":true,...,"hasKey":true}`.
 
 ## How it works
 

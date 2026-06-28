@@ -1,0 +1,19 @@
+# Render Blueprint — deploy as a WEB SERVICE (not a Static Site).
+# A Static Site cannot run the Express backend, so /api/recommend (the Gemini
+# call) won't exist there. This runs `npm start`, which serves the built
+# frontend AND the API from one port.
+services:
+  - type: web
+    name: clash-royale-deck-builder
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      # Set this in the Render dashboard (Environment) — it is NOT committed.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+    # Note: Render injects PORT automatically; the server reads process.env.PORT.
+    # Do NOT set PORT yourself.
