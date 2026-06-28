@@ -2,6 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import path from 'node:path'
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { GoogleGenAI, Type } from '@google/genai'
 
@@ -255,11 +256,19 @@ Return a single deck object.`
   }
 })
 
-// In production, serve the built frontend from the same server.
-if (process.env.NODE_ENV === 'production') {
-  const dist = path.resolve(__dirname, '../dist')
+// Serve the built frontend from the same server whenever a build exists.
+// Keyed off the dist/ folder rather than NODE_ENV so it works on any host
+// regardless of how (or whether) NODE_ENV is set. In local dev the build is
+// served by Vite on its own port, so this branch simply doesn't get hit.
+const dist = path.resolve(__dirname, '../dist')
+if (existsSync(dist)) {
   app.use(express.static(dist))
-  app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')))
+  // SPA fallback: any non-API route returns index.html so deep links and
+  // page reloads resolve client-side instead of 404-ing.
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next()
+    res.sendFile(path.join(dist, 'index.html'))
+  })
 }
 
 app.listen(PORT, () => {
